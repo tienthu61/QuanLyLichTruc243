@@ -5,84 +5,95 @@ from datetime import datetime
 
 # Cấu hình giao diện
 st.set_page_config(page_title="Vinken 243", layout="centered")
+
 st.title("📋 Quản Lý Lịch Trực Tiến Thu 243")
 
-# Kết nối Google Sheets
+# Kết nối với Google Sheets - Thêm TTL để xóa bộ nhớ đệm sau 10 giây
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Thứ tự bộ phận ưu tiên
-DEPARTMENTS = ["Bán hàng", "Dịch vụ", "Phụ tùng", "Hành chính"]
-
+# --- GIAO DIỆN TAB ---
 tab1, tab2 = st.tabs(["📝 Nhập Báo Cáo", "👥 Quản Lý Nhân Viên"])
 
-# --- TAB 1: NHẬP BÁO CÁO ---
+with tab2:
+    st.subheader("Cài đặt danh sách nhân viên")
+    try:
+        # Ép buộc đọc dữ liệu mới nhất (không dùng cache cũ)
+        df_nv = conn.read(worksheet="NhanVien", ttl=0) 
+        st.info("Nhập tên NV vào cột tương ứng. Nhớ nhấn 'Lưu' sau khi nhập.")
+        
+        # Sắp xếp cột theo ý sếp
+        uu_tien_cols = ["Bán hàng", "Dịch vụ", "Phụ tùng", "Hành chính"]
+        actual_cols = [c for c in uu_tien_cols if c in df_nv.columns] + [c for c in df_nv.columns if c not in uu_tien_cols]
+        df_nv = df_nv[actual_cols]
+        
+        edited_nv = st.data_editor(df_nv, num_rows="dynamic", use_container_width=True)
+        
+        if st.button("Lưu danh sách nhân viên"):
+            conn.update(worksheet="NhanVien", data=edited_nv)
+            st.success("✅ Đã cập nhật! Vui lòng chờ 2 giây để hệ thống đồng bộ...")
+            st.cache_data.clear() # Xóa sạch bộ nhớ tạm
+            st.rerun() 
+    except Exception as e:
+        st.error("Hệ thống chưa tìm thấy tab 'NhanVien'.")
+        st.write("Mẹo: Bạn hãy kiểm tra xem file Google Sheets đã được chia sẻ ở chế độ ' Anyone with the link can EDIT' chưa nhé.")
+
 with tab1:
     try:
-        # Luôn đọc dữ liệu mới nhất, nếu lỗi thì tạo DataFrame trống để không treo App
-        df_nv = conn.read(worksheet="NhanVien", ttl=0)
-        
-        with st.form("form_entry"):
-            date_col = st.date_input("Ngày trực", datetime.now(), format="DD/MM/YYYY")
-            dept_col = st.selectbox("Chọn Bộ Phận", DEPARTMENTS)
-            
-            # Lấy danh sách tên từ cột tương ứng trong sheet NhanVien
-            names_list = []
-            if dept_col in df_nv.columns:
-                names_list = df_nv[dept_col].dropna().astype(str).tolist()
-                names_list = [n.strip() for n in names_list if n.strip() != "" and n.lower() != "nan"]
-            
-            truc_trua = st.multiselect("Nhân viên Trực Trưa", names_list)
-            truc_dem = st.multiselect("Nhân viên Trực Đêm", names_list)
-            nghi_off = st.multiselect("Nhân viên Nghỉ (Off)", names_list)
-            
-            if st.form_submit_button("Gửi báo cáo"):
-                # Ghi vào Sheet1
-                df_history = conn.read(worksheet="Sheet1", ttl=0)
-                new_record = pd.DataFrame([{
-                    "Ngày": date_col.strftime("%d/%m/%Y"),
-                    "Bộ Phận": dept_col,
-                    "Trực Trưa": ", ".join(truc_trua),
-                    "Trực Đêm": ", ".join(truc_dem),
-                    "Nghỉ (Off)": ", ".join(nghi_off)
-                }])
-                updated_history = pd.concat([df_history, new_record], ignore_index=True)
-                conn.update(worksheet="Sheet1", data=updated_history)
-                st.success("✅ Đã gửi báo cáo thành công!")
-                st.balloons()
-    except Exception as e:
-        st.error("Chưa tìm thấy dữ liệu. Vinken hãy kiểm tra Tab 'NhanVien' trên Sheets nhé.")
-
-# --- TAB 2: QUẢN LÝ NHÂN VIÊN ---
-with tab2:
-    st.subheader("Danh sách nhân viên")
-    try:
-        df_edit = conn.read(worksheet="NhanVien", ttl=0)
-        
-        # Đảm bảo hiển thị đủ 4 cột bộ phận
-        for col in DEPARTMENTS:
-            if col not in df_edit.columns:
-                df_edit[col] = None
-        
-        df_edit = df_edit[DEPARTMENTS] # Sắp xếp đúng thứ tự
-        
-        st.write("Vinken có thể sửa trực tiếp trong bảng dưới đây:")
-        new_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True)
-        
-        if st.button("Lưu danh sách"):
-            try:
-                conn.update(worksheet="NhanVien", data=new_df)
-                st.success("✅ Đã cập nhật danh sách nhân viên!")
-                st.cache_data.clear()
-            except:
-                st.error("❌ Lỗi quyền ghi. Vinken hãy dùng link sạch (không có ?usp=sharing) trong Secrets nhé.")
+        # Đọc dữ liệu báo cáo (Sheet1)
+        existing_data = conn.read(worksheet="Sheet1", ttl=0)
+        existing_data = existing_data.dropna(how="all")
     except:
-        st.warning("Vui lòng tạo Tab 'NhanVien' trên Google Sheets.")
+        existing_data = pd.DataFrame(columns=['Ngày', 'Bộ Phận', 'Trực Trưa', 'Trực Đêm', 'Đi Trễ', 'Về Sớm', 'Nghỉ (Off)'])
 
-# --- NHẬT KÝ ---
+    with st.form("entry_form"):
+        # Ngày dd/mm/yyyy
+        today = datetime.now()
+        date_input = st.date_input("Ngày báo cáo", today, format="DD/MM/YYYY")
+        date_str = date_input.strftime("%d/%m/%Y")
+        
+        uu_tien_bp = ["Bán hàng", "Dịch vụ", "Phụ tùng", "Hành chính"]
+        
+        try:
+            df_nv_now = conn.read(worksheet="NhanVien", ttl=0)
+            list_bp = [bp for bp in uu_tien_bp if bp in df_nv_now.columns]
+            
+            dept = st.selectbox("Chọn bộ phận báo cáo", list_bp)
+            # Lọc NV và xóa các ô trống
+            ds_nv = [str(x) for x in df_nv_now[dept].tolist() if str(x) != 'nan' and str(x).strip() != '']
+        except:
+            st.warning("Đang tải danh sách nhân viên hoặc tab 'NhanVien' bị trống...")
+            ds_nv = []
+            dept = "Đang tải..."
+
+        st.markdown(f"**Chọn nhân viên bộ phận: {dept}**")
+        
+        truc_trua = st.multiselect("Trực Trưa", ds_nv)
+        truc_dem = st.multiselect("Trực Đêm", ds_nv)
+        di_tre = st.multiselect("Đi Trễ", ds_nv)
+        ve_som = st.multiselect("Về Sớm", ds_nv)
+        off = st.multiselect("Nghỉ Chế Độ (Off)", ds_nv)
+            
+        submit = st.form_submit_button("Gửi báo cáo")
+
+        if submit:
+            new_entry = pd.DataFrame([{
+                "Ngày": date_str, "Bộ Phận": dept,
+                "Trực Trưa": ", ".join(truc_trua), "Trực Đêm": ", ".join(truc_dem),
+                "Đi Trễ": ", ".join(di_tre), "Về Sớm": ", ".join(ve_som), "Nghỉ (Off)": ", ".join(off)
+            }])
+            updated = pd.concat([existing_data, new_entry], ignore_index=True)
+            conn.update(worksheet="Sheet1", data=updated)
+            st.success(f"✅ Đã lưu báo cáo ngày {date_str}")
+            st.cache_data.clear()
+            st.rerun()
+
+# Tra cứu
 st.markdown("---")
-try:
-    st.subheader("🔍 Nhật Ký Gần Đây")
-    df_log = conn.read(worksheet="Sheet1", ttl=0)
-    st.dataframe(df_log.tail(10), use_container_width=True)
-except:
-    st.write("Chưa có lịch sử báo cáo.")
+st.subheader("🔍 Nhật Ký Lịch Trực")
+query = st.text_input("Tìm nhanh (Tên hoặc Ngày)...")
+
+if query:
+    result = existing_data[existing_data.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
+    st.dataframe(result, use_container_width=True)
+else:
+    st.dataframe(existing_data.tail(10), use_container_width=True)

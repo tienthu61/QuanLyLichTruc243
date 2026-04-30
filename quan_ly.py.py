@@ -8,20 +8,32 @@ st.set_page_config(page_title="Vinken 243", layout="centered")
 
 st.title("📋 Quản Lý Lịch Trực Tiến Thu 243")
 
-# Kết nối với Google Sheets - Thêm TTL để xóa bộ nhớ đệm sau 10 giây
+# Kết nối với Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+# --- HÀM LẤY DỮ LIỆU THÔNG MINH ---
+def get_data(sheet_name):
+    try:
+        # Thử đọc tên chuẩn
+        return conn.read(worksheet=sheet_name, ttl=0)
+    except:
+        try:
+            # Thử đọc nếu sếp lỡ tay gõ thừa dấu cách ở tên tab
+            return conn.read(worksheet=f"{sheet_name} ", ttl=0)
+        except:
+            return None
 
 # --- GIAO DIỆN TAB ---
 tab1, tab2 = st.tabs(["📝 Nhập Báo Cáo", "👥 Quản Lý Nhân Viên"])
 
 with tab2:
     st.subheader("Cài đặt danh sách nhân viên")
-    try:
-        # Ép buộc đọc dữ liệu mới nhất (không dùng cache cũ)
-        df_nv = conn.read(worksheet="NhanVien", ttl=0) 
+    df_nv = get_data("NhanVien")
+    
+    if df_nv is not None:
         st.info("Nhập tên NV vào cột tương ứng. Nhớ nhấn 'Lưu' sau khi nhập.")
         
-        # Sắp xếp cột theo ý sếp
+        # Thứ tự bộ phận theo yêu cầu của Vinken
         uu_tien_cols = ["Bán hàng", "Dịch vụ", "Phụ tùng", "Hành chính"]
         actual_cols = [c for c in uu_tien_cols if c in df_nv.columns] + [c for c in df_nv.columns if c not in uu_tien_cols]
         df_nv = df_nv[actual_cols]
@@ -29,41 +41,39 @@ with tab2:
         edited_nv = st.data_editor(df_nv, num_rows="dynamic", use_container_width=True)
         
         if st.button("Lưu danh sách nhân viên"):
-            conn.update(worksheet="NhanVien", data=edited_nv)
-            st.success("✅ Đã cập nhật! Vui lòng chờ 2 giây để hệ thống đồng bộ...")
-            st.cache_data.clear() # Xóa sạch bộ nhớ tạm
+            # Lưu vào đúng tên tab hiện tại
+            worksheet_target = "NhanVien " if "NhanVien " in str(df_nv) else "NhanVien"
+            conn.update(worksheet=worksheet_target, data=edited_nv)
+            st.success("✅ Đã cập nhật! Đang làm mới dữ liệu...")
+            st.cache_data.clear()
             st.rerun() 
-    except Exception as e:
+    else:
         st.error("Hệ thống chưa tìm thấy tab 'NhanVien'.")
-        st.write("Mẹo: Bạn hãy kiểm tra xem file Google Sheets đã được chia sẻ ở chế độ ' Anyone with the link can EDIT' chưa nhé.")
+        st.info("Mẹo: Vinken hãy kiểm tra lại tên Tab dưới cùng của Google Sheets, đảm bảo không có dấu cách thừa nhé!")
 
 with tab1:
-    try:
-        # Đọc dữ liệu báo cáo (Sheet1)
-        existing_data = conn.read(worksheet="Sheet1", ttl=0)
-        existing_data = existing_data.dropna(how="all")
-    except:
+    # Đọc dữ liệu báo cáo (Sheet1)
+    existing_data = get_data("Sheet1")
+    if existing_data is None:
         existing_data = pd.DataFrame(columns=['Ngày', 'Bộ Phận', 'Trực Trưa', 'Trực Đêm', 'Đi Trễ', 'Về Sớm', 'Nghỉ (Off)'])
+    else:
+        existing_data = existing_data.dropna(how="all")
 
     with st.form("entry_form"):
-        # Ngày dd/mm/yyyy
         today = datetime.now()
         date_input = st.date_input("Ngày báo cáo", today, format="DD/MM/YYYY")
         date_str = date_input.strftime("%d/%m/%Y")
         
         uu_tien_bp = ["Bán hàng", "Dịch vụ", "Phụ tùng", "Hành chính"]
+        df_nv_now = get_data("NhanVien")
         
-        try:
-            df_nv_now = conn.read(worksheet="NhanVien", ttl=0)
+        if df_nv_now is not None:
             list_bp = [bp for bp in uu_tien_bp if bp in df_nv_now.columns]
-            
             dept = st.selectbox("Chọn bộ phận báo cáo", list_bp)
-            # Lọc NV và xóa các ô trống
             ds_nv = [str(x) for x in df_nv_now[dept].tolist() if str(x) != 'nan' and str(x).strip() != '']
-        except:
-            st.warning("Đang tải danh sách nhân viên hoặc tab 'NhanVien' bị trống...")
+        else:
+            dept = "Chưa có dữ liệu"
             ds_nv = []
-            dept = "Đang tải..."
 
         st.markdown(f"**Chọn nhân viên bộ phận: {dept}**")
         
@@ -73,9 +83,7 @@ with tab1:
         ve_som = st.multiselect("Về Sớm", ds_nv)
         off = st.multiselect("Nghỉ Chế Độ (Off)", ds_nv)
             
-        submit = st.form_submit_button("Gửi báo cáo")
-
-        if submit:
+        if st.form_submit_button("Gửi báo cáo"):
             new_entry = pd.DataFrame([{
                 "Ngày": date_str, "Bộ Phận": dept,
                 "Trực Trưa": ", ".join(truc_trua), "Trực Đêm": ", ".join(truc_dem),
@@ -87,11 +95,10 @@ with tab1:
             st.cache_data.clear()
             st.rerun()
 
-# Tra cứu
+# Tra cứu nhật ký
 st.markdown("---")
 st.subheader("🔍 Nhật Ký Lịch Trực")
-query = st.text_input("Tìm nhanh (Tên hoặc Ngày)...")
-
+query = st.text_input("Tìm nhanh tên nhân viên hoặc ngày...")
 if query:
     result = existing_data[existing_data.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
     st.dataframe(result, use_container_width=True)
